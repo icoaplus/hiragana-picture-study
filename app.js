@@ -120,19 +120,61 @@ $('quizWithoutImage').onclick=()=>setQuizInitialMode(false);
 function applyQuizImageMode(){const visible=quizImageMode===true;$('hintpic').hidden=!visible||!target;$('qHint').classList.toggle('on',visible);$('qHint').setAttribute('aria-pressed',String(visible));$('qHint').setAttribute('aria-label',visible?'絵を消す':'絵を出す');$('qHint').title=visible?'絵を消す':'絵を出す'}
 $('qStart').onclick=()=>{if(quizImageMode===null)return;$('qStart').hidden=true;$('qSound').disabled=false;$('qHint').disabled=false;newQuestion()};
 
-let matchIndex=0,matchSolved=false,matchPosition={x:0,y:0},drag=null;
+let matchIndex=0,matchSolved=false,matchOffset={x:0,y:0},drag=null;
 const matchPiece=$('matchPiece'),matchBoard=$('matchBoard');
-function paintMatch(){matchPiece.style.left=matchPosition.x*100+'%';matchPiece.style.top=matchPosition.y*100+'%'}
-function resetMatch(){if($('matchSelect'))$('matchSelect').value=matchIndex;drag=null;matchSolved=false;const item=pool[matchIndex],b=MATCH_BOUNDS[item.id];$('matchArt').src=src(item,'art');$('matchArt').alt=item.word;$('matchGuide').src=src(item,'glyph');$('matchGuide').hidden=true;$('matchHint').setAttribute('aria-pressed','false');$('matchHint').classList.remove('on');matchPiece.src=src(item,'match');matchPiece.alt=item.char;matchPiece.style.width=b.w*100+'%';matchPiece.style.height=b.h*100+'%';matchPiece.style.opacity='.7';matchPiece.setAttribute('aria-label',item.char+'を動かして絵に重ねる');$('matchCircle').hidden=true;$('matchInstruction').textContent='文字をうごかして、絵にかさねよう';$('matchInstruction').classList.remove('solved');matchPosition={x:b.x<(1-b.w)/2?1-b.w:0,y:b.y<(1-b.h)/2?1-b.h:0};paintMatch();[...$('matchLetters').children].forEach((button,i)=>{button.classList.toggle('on',i===matchIndex);button.setAttribute('aria-pressed',i===matchIndex)})}
-function constrainMatch(x,y){const b=MATCH_BOUNDS[pool[matchIndex].id];matchPosition={x:Math.max(0,Math.min(1-b.w,x)),y:Math.max(0,Math.min(1-b.h,y))};paintMatch()}
-function finishMatch(){const b=MATCH_BOUNDS[pool[matchIndex].id];if(Math.hypot(matchPosition.x-b.x,matchPosition.y-b.y)>Math.max(.13,Math.min(.21,Math.min(b.w,b.h)*.52)))return;matchPosition={x:b.x,y:b.y};paintMatch();matchSolved=true;matchPiece.style.opacity='.5';$('matchCircle').hidden=false;$('matchGuide').hidden=true;$('matchInstruction').textContent='ぴったり！';$('matchInstruction').classList.add('solved');correctSound(pool[matchIndex],'match')}
-matchBoard.onpointerdown=e=>{if(matchSolved||drag||e.target===matchPiece)return;const board=matchBoard.getBoundingClientRect(),b=MATCH_BOUNDS[pool[matchIndex].id];const x=(e.clientX-board.left)/board.width,y=(e.clientY-board.top)/board.width;const cx=matchPosition.x+b.w/2,cy=matchPosition.y+b.h/2;if(Math.hypot(x-cx,y-cy)>.18)return;e.preventDefault();drag={id:e.pointerId,x:e.clientX,y:e.clientY,startX:matchPosition.x,startY:matchPosition.y,size:board.width,board:true};matchBoard.setPointerCapture(e.pointerId)};
-matchBoard.onpointermove=e=>{if(!drag||!drag.board||drag.id!==e.pointerId)return;e.preventDefault();constrainMatch(drag.startX+(e.clientX-drag.x)/drag.size,drag.startY+(e.clientY-drag.y)/drag.size)};matchBoard.onpointerup=e=>{if(!drag||!drag.board||drag.id!==e.pointerId)return;drag=null;finishMatch()};matchBoard.onpointercancel=()=>{drag=null};
-matchPiece.onpointerdown=e=>{if(matchSolved||drag)return;e.preventDefault();const rect=matchBoard.getBoundingClientRect();drag={id:e.pointerId,x:e.clientX,y:e.clientY,startX:matchPosition.x,startY:matchPosition.y,size:rect.width};matchPiece.setPointerCapture(e.pointerId)};
-matchPiece.onpointermove=e=>{if(!drag||drag.id!==e.pointerId)return;e.preventDefault();constrainMatch(drag.startX+(e.clientX-drag.x)/drag.size,drag.startY+(e.clientY-drag.y)/drag.size)};
-matchPiece.onpointerup=e=>{if(!drag||drag.id!==e.pointerId)return;drag=null;finishMatch()};matchPiece.onpointercancel=()=>{drag=null};matchPiece.onlostpointercapture=()=>{drag=null};
-matchPiece.onkeydown=e=>{if(matchSolved)return;const moves={ArrowLeft:[-.025,0],ArrowRight:[.025,0],ArrowUp:[0,-.025],ArrowDown:[0,.025]};if(moves[e.key]){e.preventDefault();const [x,y]=moves[e.key];constrainMatch(matchPosition.x+x,matchPosition.y+y);finishMatch()}else if(e.key==='Enter'||e.key===' '){e.preventDefault();finishMatch()}};
-pool.forEach((item,i)=>{const button=document.createElement('button');button.textContent=item.char;button.onclick=()=>{matchIndex=i;resetMatch()};$('matchLetters').append(button);const im=new Image();im.src=src(item,'match');im.decode().catch(()=>{})});
+/* 「おぼえる」と全く同じ800×800のglyph画像を同一サイズで使う。
+   動かす間はそのキャンバス全体を移動し、完成時はoffset=0へ戻す。 */
+const MATCH_TARGET_RADIUS=.22;
+function paintMatch(){matchPiece.style.transform=`translate(${matchOffset.x*100}%,${matchOffset.y*100}%)`}
+function resetMatch(){
+  if($('matchSelect'))$('matchSelect').value=matchIndex;
+  drag=null;matchSolved=false;
+  const item=pool[matchIndex];
+  $('matchArt').src=src(item,'art');$('matchArt').alt=item.word;
+  $('matchGuide').src=src(item,'glyph');$('matchGuide').hidden=true;
+  $('matchHint').setAttribute('aria-pressed','false');$('matchHint').classList.remove('on');
+  matchPiece.src=src(item,'glyph');matchPiece.alt=item.char;
+  matchPiece.style.width='100%';matchPiece.style.height='100%';
+  matchPiece.style.opacity='.7';matchPiece.setAttribute('aria-label',item.char+'を動かして絵に重ねる');
+  const b=MATCH_BOUNDS[item.id];
+  const direction=b.x+b.w/2<.5?1:-1;
+  matchOffset={x:direction*.27,y:b.y+b.h/2<.55?.18:-.18};paintMatch();
+  $('matchCircle').hidden=true;
+  $('matchInstruction').textContent='文字をうごかして、絵にかさねよう';$('matchInstruction').classList.remove('solved');
+  [...$('matchLetters').children].forEach((button,i)=>{button.classList.toggle('on',i===matchIndex);button.setAttribute('aria-pressed',i===matchIndex)});
+}
+function constrainMatch(x,y){matchOffset={x:Math.max(-.55,Math.min(.55,x)),y:Math.max(-.55,Math.min(.55,y))};paintMatch()}
+function finishMatch(){
+  if(Math.hypot(matchOffset.x,matchOffset.y)>MATCH_TARGET_RADIUS)return;
+  matchOffset={x:0,y:0};paintMatch();matchSolved=true;
+  matchPiece.style.opacity='.7';$('matchCircle').hidden=false;
+  $('matchGuide').hidden=true;$('matchInstruction').textContent='ぴったり！';
+  $('matchInstruction').classList.add('solved');correctSound(pool[matchIndex],'match');
+}
+/* 透明な絵の余白をつかんでも、指で動かしやすいようにボードで操作を受ける。 */
+matchPiece.style.pointerEvents='none';
+matchBoard.onpointerdown=e=>{
+  if(matchSolved||drag||e.target.closest('button'))return;
+  const board=matchBoard.getBoundingClientRect(),b=MATCH_BOUNDS[pool[matchIndex].id];
+  const x=(e.clientX-board.left)/board.width,y=(e.clientY-board.top)/board.height;
+  const cx=b.x+b.w/2+matchOffset.x,cy=b.y+b.h/2+matchOffset.y;
+  if(Math.hypot(x-cx,y-cy)>.55)return;
+  e.preventDefault();drag={id:e.pointerId,x:e.clientX,y:e.clientY,startX:matchOffset.x,startY:matchOffset.y,size:board.width};
+  matchBoard.setPointerCapture(e.pointerId);
+};
+matchBoard.onpointermove=e=>{
+  if(!drag||drag.id!==e.pointerId)return;
+  e.preventDefault();constrainMatch(drag.startX+(e.clientX-drag.x)/drag.size,drag.startY+(e.clientY-drag.y)/drag.size);
+};
+matchBoard.onpointerup=e=>{if(!drag||drag.id!==e.pointerId)return;drag=null;finishMatch()};
+matchBoard.onpointercancel=()=>{drag=null};
+matchPiece.onkeydown=e=>{
+  if(matchSolved)return;
+  const moves={ArrowLeft:[-.035,0],ArrowRight:[.035,0],ArrowUp:[0,-.035],ArrowDown:[0,.035]};
+  if(moves[e.key]){e.preventDefault();const [x,y]=moves[e.key];constrainMatch(matchOffset.x+x,matchOffset.y+y);finishMatch()}
+  else if(e.key==='Enter'||e.key===' '){e.preventDefault();finishMatch()}
+};
+pool.forEach((item,i)=>{const button=document.createElement('button');button.textContent=item.char;button.onclick=()=>{matchIndex=i;resetMatch()};$('matchLetters').append(button);const im=new Image();im.src=src(item,'glyph');im.decode().catch(()=>{})});
 $('matchReset').onclick=resetMatch;$('matchPrev').onclick=()=>{matchIndex=(matchIndex+pool.length-1)%pool.length;resetMatch()};$('matchNext').onclick=()=>{matchIndex=(matchIndex+1)%pool.length;resetMatch()};$('matchHint').onclick=()=>{if(matchSolved)return;$('matchGuide').hidden=!$('matchGuide').hidden;$('matchHint').classList.toggle('on',!$('matchGuide').hidden);$('matchHint').setAttribute('aria-pressed',!$('matchGuide').hidden)};$('matchSound').onclick=()=>sayLesson(pool[matchIndex]);
 
 
@@ -231,22 +273,28 @@ $('wordStart').onclick=()=>{wordList=shuffle([...wordList]);wordIndex=0;startWor
 const learnColumns=[['あ','あいうえお'],['か','かきくけこ'],['さ','さしすせそ'],['た','たちつてと'],['な','なにぬねの'],['は','はひふへほ'],['ま','まみむめも'],['や','やゆよ'],['ら','らりるれろ'],['わ','わをん']];
 function buildLearnChooser(){
   const root=$('letters');root.replaceChildren();root.classList.add('learnChooser');
-  const rows=document.createElement('div');rows.className='learnRowChoices';rows.setAttribute('aria-label','行を選ぶ');
-  const chars=document.createElement('div');chars.className='learnCharChoices';chars.setAttribute('aria-label','文字を選ぶ');
-  root.append(rows,chars);
+  const layout=$('learn').querySelector('.layout');layout.prepend(root);
+  const rows=document.createElement('div');rows.className='learnRowChoices';rows.setAttribute('aria-label','行を選ぶ');root.append(rows);
   let col=learnColumns.findIndex(([,str])=>str.includes(pool[index].char));if(col<0)col=0;
   const draw=()=>{
-    rows.replaceChildren();chars.replaceChildren();
+    rows.replaceChildren();
     learnColumns.forEach(([name,letters],i)=>{
       if(![...letters].some(ch=>pool.some(it=>it.char===ch)))return;
-      const b=document.createElement('button');b.textContent=name+'行';b.className=i===col?'on':'';b.setAttribute('aria-pressed',String(i===col));b.onclick=()=>{col=i;draw()};rows.append(b);
-    });
-    [...learnColumns[col][1]].forEach(ch=>{
-      const i=pool.findIndex(it=>it.char===ch);if(i<0)return;
-      const b=document.createElement('button');b.textContent=ch;b.className=i===index?'on':'';b.setAttribute('aria-pressed',String(i===index));b.onclick=()=>{index=i;display();draw()};chars.append(b);
+      const unit=document.createElement('div');unit.className='learnRowUnit';
+      const b=document.createElement('button');b.textContent=name+'行';b.className='learnRowButton'+(i===col?' on':'');
+      b.setAttribute('aria-pressed',String(i===col));b.onclick=()=>{col=i;draw()};unit.append(b);
+      if(i===col){
+        const chars=document.createElement('div');chars.className='learnCharChoices';chars.setAttribute('aria-label',name+'行の文字');
+        [...letters].forEach(ch=>{
+          const pos=pool.findIndex(it=>it.char===ch);if(pos<0)return;
+          const choice=document.createElement('button');choice.textContent=ch;choice.className=pos===index?'on':'';
+          choice.setAttribute('aria-pressed',String(pos===index));choice.onclick=()=>{index=pos;display();draw()};chars.append(choice);
+        });unit.append(chars);
+      }
+      rows.append(unit);
     });
   };
-  root.updateSelection=()=>{const next=learnColumns.findIndex(([,letters])=>letters.includes(pool[index].char));if(next>=0&&next!==col)col=next;draw()};
+  root.updateSelection=()=>{const next=learnColumns.findIndex(([,letters])=>letters.includes(pool[index].char));if(next>=0)col=next;draw()};
   draw();
 }
 buildLearnChooser();
